@@ -2,13 +2,32 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
+	"log"
 	"multiclient-server/db"
+	"multiclient-server/logging"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 )
+
+var (
+	serverName = flag.String("server-name", "", "name for the server")
+	port       = flag.String("port", "", "port for running the server")
+)
+
+func parseFlags() {
+	flag.Parse()
+
+	if *serverName == "" {
+		log.Fatalf("Must provide serverName for the server")
+	}
+
+	if *port == "" {
+		log.Fatalf("Must provide a port number for server to run")
+	}
+}
 
 func handleConnection(c net.Conn, db *db.Database) {
 	for {
@@ -64,13 +83,8 @@ func handleConnection(c net.Conn, db *db.Database) {
 }
 
 func main() {
-	arguments := os.Args
-	if len(arguments) == 1 {
-		fmt.Println("Port required for server")
-		return
-	}
-	PORT := ":" + arguments[1]
-	l, err := net.Listen("tcp", PORT)
+	parseFlags()
+	l, err := net.Listen("tcp", ":"+*port)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -80,6 +94,12 @@ func main() {
 	db, err := db.NewDatabase()
 	if err != nil {
 		fmt.Println("Error while creating db")
+		return
+	}
+
+	err = logging.RegisterServer(*serverName, *port)
+	if err != nil {
+		fmt.Println(err)
 		return
 	}
 
