@@ -103,6 +103,16 @@ func main() {
 		return
 	}
 
+	var serverMapping map[string]int
+	serverMapping, err = logging.ListRegisteredServer()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	for key, value := range serverMapping {
+		fmt.Println("Server: " + key + " is running on port: " + strconv.Itoa(value))
+	}
+
 	for {
 		c, err := l.Accept()
 		if err != nil {
