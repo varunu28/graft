@@ -10,8 +10,6 @@ import (
 	"strings"
 )
 
-var count = 0
-
 func handleConnection(c net.Conn, db *db.Database) {
 	for {
 		data, err := bufio.NewReader(c).ReadString('\n')
@@ -24,25 +22,43 @@ func handleConnection(c net.Conn, db *db.Database) {
 			break
 		}
 		fmt.Println(">", string(message))
-		if strings.HasPrefix(message, "GET") {
-			splits := strings.Split(message, " ")
-			val, err := db.GetKey(splits[1])
-			if err != nil {
-				c.Write([]byte("Key not found error \n"))
-			} else {
-				c.Write([]byte("Value for key (" + splits[1] + ") is: " + strconv.Itoa(val) + "\n"))
-			}
-		} else if strings.HasPrefix(message, "SET") {
-			splits := strings.Split(message, " ")
+		splits := strings.Split(message, " ")
+		operation := splits[0]
+		var response string
+		if operation == "GET" {
 			key := splits[1]
-			val, _ := strconv.Atoi(splits[2])
-			if err := db.SetKey(key, val); err != nil {
-				fmt.Println("Error inserting key in DB")
+			val, err := db.GetKey(key)
+			if err != nil {
+				response = "Key not found error"
+			} else {
+				response = "Value for key (" + key + ") is: " + strconv.Itoa(val)
 			}
-			c.Write([]byte("Key set successfully \n"))
+		} else if operation == "SET" {
+			key := splits[1]
+			val, err := strconv.Atoi(splits[2])
+			if err != nil {
+				response = "Not a valid integer value"
+			}
+			if response == "" {
+				if err := db.SetKey(key, val); err != nil {
+					response = "Error inserting key in DB"
+				}
+			}
+			if response == "" {
+				response = "Key set successfully"
+			}
+		} else if operation == "DELETE" {
+			key := splits[1]
+			if err := db.DeleteKey(key); err != nil {
+				response = "Key not found"
+			}
+			if response == "" {
+				response = "Key deleted successfully"
+			}
 		} else {
-			c.Write([]byte("Invalid command \n"))
+			response = "Invalid command"
 		}
+		c.Write([]byte(response + "\n"))
 	}
 	c.Close()
 }
@@ -74,7 +90,5 @@ func main() {
 			return
 		}
 		go handleConnection(c, db)
-		count++
-		fmt.Printf("Number of active client connections: (%d)", count)
 	}
 }

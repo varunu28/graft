@@ -24,3 +24,12 @@ func (d *Database) GetKey(key string) (int, error) {
 	}
 	return val, nil
 }
+
+func (d *Database) DeleteKey(key string) error {
+	_, exists := d.db[key]
+	if !exists {
+		return errors.New("Key not found")
+	}
+	delete(d.db, key)
+	return nil
+}
