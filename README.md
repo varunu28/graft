@@ -1,2 +1,2 @@
-# MultiClient-Server
-A simple multi-client server application for message passing
+# Go Raft
+From sratch implementation of Raft consensus algorithm in Go
