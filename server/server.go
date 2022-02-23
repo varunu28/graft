@@ -13,14 +13,32 @@ import (
 )
 
 var (
-	serverName = flag.String("server-name", "", "name for the server")
-	port       = flag.String("port", "", "port for running the server")
+	serverName  = flag.String("server-name", "", "name for the server")
+	port        = flag.String("port", "", "port for running the server")
+	currentRole = flag.String("current-role", "follower", "current role for server")
 )
 
 type Server struct {
-	port string
-	name string
-	db   *db.Database
+	port          string
+	name          string
+	db            *db.Database
+	currentTerm   int
+	votedFor      string
+	logs          []string
+	commitLength  int
+	currentRole   string
+	leaderNodeId  string
+	votesReceived map[string]bool
+	ackedLength   map[string]int
+	sentLength    map[string]int
+}
+
+func (s Server) logServerPersistedState() {
+	persistenceLog := s.name + "," + strconv.Itoa(s.currentTerm) + "," + s.votedFor + "," + strconv.Itoa(s.commitLength)
+	err := logging.PersistServerState(persistenceLog)
+	if err != nil {
+		fmt.Println(err)
+	}
 }
 
 func parseFlags() {
@@ -36,14 +54,15 @@ func parseFlags() {
 }
 
 func (s Server) broadcast(message string) {
-	if s.port == "8000" {
+	if s.currentRole == "leader" {
 		serverToPortMapping, err := logging.ListRegisteredServer()
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
+		serverPort, _ := strconv.Atoi(s.port)
 		for _, port := range serverToPortMapping {
-			if port != 8000 {
+			if port != serverPort {
 				c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
 				if err != nil {
 					fmt.Println(err)
@@ -71,7 +90,7 @@ func (s Server) handleConnection(c net.Conn) {
 		fmt.Println(">", string(message))
 		go s.broadcast(message)
 		var response string = ""
-		if s.port == "8000" {
+		if s.currentRole == "leader" {
 			var err = s.db.ValidateCommand(message)
 			if err != nil {
 				response = err.Error()
@@ -113,7 +132,21 @@ func main() {
 		return
 	}
 
-	s := Server{port: *port, name: *serverName, db: db}
+	s := Server{
+		port:          *port,
+		name:          *serverName,
+		db:            db,
+		currentTerm:   0,
+		votedFor:      "",
+		logs:          make([]string, 0),
+		commitLength:  0,
+		currentRole:   *currentRole,
+		leaderNodeId:  "",
+		votesReceived: map[string]bool{},
+		ackedLength:   map[string]int{},
+		sentLength:    map[string]int{},
+	}
+	s.logServerPersistedState()
 	for {
 		c, err := l.Accept()
 		if err != nil {

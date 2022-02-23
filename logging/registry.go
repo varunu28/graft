@@ -6,16 +6,16 @@ import (
 	"strings"
 )
 
-const fileName string = "registry.txt"
+const registryFileName string = "registry.txt"
 
 // RegisterServer appends a registry log into registry for server
 func RegisterServer(serverName string, port string) error {
-	var err = fileutils.CreateFileIfNotExists(fileName)
+	var err = fileutils.CreateFileIfNotExists(registryFileName)
 	if err != nil {
 		return err
 	}
 	registryLog := serverName + "," + port + "\n"
-	err = fileutils.WriteToFile(fileName, registryLog)
+	err = fileutils.WriteToFile(registryFileName, registryLog)
 	if err != nil {
 		return err
 	}
@@ -25,7 +25,7 @@ func RegisterServer(serverName string, port string) error {
 // ListRegisteredServer returns a mapping of serverName to corresponding port
 func ListRegisteredServer() (map[string]int, error) {
 	m := make(map[string]int)
-	registeryLines, err := fileutils.ReadFile(fileName)
+	registeryLines, err := fileutils.ReadFile(registryFileName)
 	if err != nil {
 		return m, err
 	}
