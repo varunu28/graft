@@ -17,6 +17,12 @@ var (
 	port       = flag.String("port", "", "port for running the server")
 )
 
+type Server struct {
+	port string
+	name string
+	db   *db.Database
+}
+
 func parseFlags() {
 	flag.Parse()
 
@@ -29,7 +35,29 @@ func parseFlags() {
 	}
 }
 
-func handleConnection(c net.Conn, db *db.Database) {
+func (s Server) broadcast(message string) {
+	if s.port == "8000" {
+		serverToPortMapping, err := logging.ListRegisteredServer()
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		for _, port := range serverToPortMapping {
+			if port != 8000 {
+				c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				fmt.Fprintf(c, message+"\n")
+				go s.handleConnection(c)
+			}
+		}
+	}
+}
+
+func (s Server) handleConnection(c net.Conn) {
+	defer c.Close()
 	for {
 		data, err := bufio.NewReader(c).ReadString('\n')
 		if err != nil {
@@ -37,49 +65,19 @@ func handleConnection(c net.Conn, db *db.Database) {
 			return
 		}
 		message := strings.TrimSpace(string(data))
-		if message == "STOP" {
-			break
+		if message == "Invalid command" {
+			continue
 		}
 		fmt.Println(">", string(message))
-		splits := strings.Split(message, " ")
-		operation := splits[0]
-		var response string
-		if operation == "GET" {
-			key := splits[1]
-			val, err := db.GetKey(key)
-			if err != nil {
-				response = "Key not found error"
-			} else {
-				response = "Value for key (" + key + ") is: " + strconv.Itoa(val)
-			}
-		} else if operation == "SET" {
-			key := splits[1]
-			val, err := strconv.Atoi(splits[2])
-			if err != nil {
-				response = "Not a valid integer value"
-			}
-			if response == "" {
-				if err := db.SetKey(key, val); err != nil {
-					response = "Error inserting key in DB"
-				}
-			}
-			if response == "" {
-				response = "Key set successfully"
-			}
-		} else if operation == "DELETE" {
-			key := splits[1]
-			if err := db.DeleteKey(key); err != nil {
-				response = "Key not found"
-			}
-			if response == "" {
-				response = "Key deleted successfully"
-			}
-		} else {
-			response = "Invalid command"
+		go s.broadcast(message)
+		var response string = ""
+		if s.port == "8000" {
+			response = s.db.PerformDbOperations(message)
 		}
-		c.Write([]byte(response + "\n"))
+		if response != "" {
+			c.Write([]byte(response + "\n"))
+		}
 	}
-	c.Close()
 }
 
 func main() {
@@ -103,22 +101,13 @@ func main() {
 		return
 	}
 
-	var serverMapping map[string]int
-	serverMapping, err = logging.ListRegisteredServer()
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-	for key, value := range serverMapping {
-		fmt.Println("Server: " + key + " is running on port: " + strconv.Itoa(value))
-	}
-
+	s := Server{port: *port, name: *serverName, db: db}
 	for {
 		c, err := l.Accept()
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		go handleConnection(c, db)
+		go s.handleConnection(c)
 	}
 }
