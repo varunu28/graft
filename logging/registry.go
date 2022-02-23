@@ -11,6 +11,9 @@ const fileName string = "registry.txt"
 // RegisterServer appends a registry log into registry for server
 func RegisterServer(serverName string, port string) error {
 	var err = fileutils.CreateFileIfNotExists(fileName)
+	if err != nil {
+		return err
+	}
 	registryLog := serverName + "," + port + "\n"
 	err = fileutils.WriteToFile(fileName, registryLog)
 	if err != nil {

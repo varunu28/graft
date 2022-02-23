@@ -1,4 +1,4 @@
-package logging
+package messages
 
 type LogResponse struct {
 	nodeId                string

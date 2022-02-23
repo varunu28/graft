@@ -1,4 +1,4 @@
-package logging
+package messages
 
 type LogRequest struct {
 	leaderId     string

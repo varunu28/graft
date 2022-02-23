@@ -72,7 +72,19 @@ func (s Server) handleConnection(c net.Conn) {
 		go s.broadcast(message)
 		var response string = ""
 		if s.port == "8000" {
-			response = s.db.PerformDbOperations(message)
+			var err = s.db.ValidateCommand(message)
+			if err != nil {
+				response = err.Error()
+			}
+			if response == "" {
+				err = s.db.LogCommand(message, s.name)
+				if err != nil {
+					response = "error while logging command"
+				}
+			}
+			if response == "" {
+				response = s.db.PerformDbOperations(message)
+			}
 		}
 		if response != "" {
 			c.Write([]byte(response + "\n"))
