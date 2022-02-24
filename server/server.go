@@ -7,6 +7,7 @@ import (
 	"log"
 	"multiclient-server/db"
 	"multiclient-server/logging"
+	"multiclient-server/messages"
 	"net"
 	"strconv"
 	"strings"
@@ -53,26 +54,32 @@ func parseFlags() {
 	}
 }
 
-func (s Server) broadcast(message string) {
-	if s.currentRole == "leader" {
-		serverToPortMapping, err := logging.ListRegisteredServer()
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		serverPort, _ := strconv.Atoi(s.port)
-		for _, port := range serverToPortMapping {
-			if port != serverPort {
-				c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
-				if err != nil {
-					fmt.Println(err)
-					return
-				}
-				fmt.Fprintf(c, message+"\n")
-				go s.handleConnection(c)
-			}
-		}
+func (s Server) sendMessageToFollowerNode(message string, port int) {
+	c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
+	fmt.Fprintf(c, message+"\n")
+	go s.handleConnection(c)
+}
+
+func (s Server) replicateLog(followerName string, followerPort int) {
+	var prefixTerm = 0
+	prefixLength := s.sentLength[followerName]
+	if prefixLength > 0 {
+		logSplit := strings.Split(s.logs[prefixLength-1], "#")
+		prefixTerm, _ = strconv.Atoi(logSplit[1])
+	}
+	logRequest := messages.NewLogRequest(
+		s.name,
+		s.currentTerm,
+		prefixLength,
+		prefixTerm,
+		s.commitLength,
+		s.logs[s.sentLength[followerName]:],
+	)
+	s.sendMessageToFollowerNode(logRequest.String(), followerPort)
 }
 
 func (s Server) handleConnection(c net.Conn) {
@@ -84,11 +91,10 @@ func (s Server) handleConnection(c net.Conn) {
 			return
 		}
 		message := strings.TrimSpace(string(data))
-		if message == "Invalid command" {
+		if message == "invalid command" {
 			continue
 		}
 		fmt.Println(">", string(message))
-		go s.broadcast(message)
 		var response string = ""
 		if s.currentRole == "leader" {
 			var err = s.db.ValidateCommand(message)
@@ -96,9 +102,18 @@ func (s Server) handleConnection(c net.Conn) {
 				response = err.Error()
 			}
 			if response == "" {
-				err = s.db.LogCommand(message, s.name)
+				logMessage := message + "#" + strconv.Itoa(s.currentTerm)
+				s.ackedLength[s.name] = len(s.logs)
+				s.logs = append(s.logs, logMessage)
+				err = s.db.LogCommand(logMessage, s.name)
 				if err != nil {
 					response = "error while logging command"
+				}
+				allServers, _ := logging.ListRegisteredServer()
+				for sname, sport := range allServers {
+					if sname != s.name {
+						s.replicateLog(sname, sport)
+					}
 				}
 			}
 			if response == "" {
