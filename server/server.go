@@ -215,9 +215,10 @@ func (s *Server) appendEntries(prefixLength int, commitLength int, suffix []stri
 	}
 	if commitLength > s.commitLength {
 		for i := s.commitLength; i < commitLength; i++ {
-			s.db.PerformDbOperations(strings.Split(suffix[i], "#")[0])
+			s.db.PerformDbOperations(strings.Split(s.Logs[i], "#")[0])
 		}
 		s.commitLength = commitLength
+		s.logServerPersistedState()
 	}
 }
 
@@ -253,7 +254,24 @@ func (s *Server) handleLogRequest(message string) string {
 }
 
 func (s *Server) commitLogEntries() {
-	// TODO: Commit entries if Quorum is found
+	all_nodes, _ := logging.ListRegisteredServer()
+	for i := s.commitLength; i < len(s.Logs); i++ {
+		var acks = 0
+		for node := range all_nodes {
+			if node != s.name && s.ackedLength[node] > s.commitLength {
+				acks = acks + 1
+			}
+		}
+		if acks >= (len(all_nodes)+1)/2 {
+			log := s.Logs[i]
+			command := strings.Split(log, "#")[0]
+			s.db.PerformDbOperations(command)
+			s.commitLength = s.commitLength + 1
+			s.logServerPersistedState()
+		} else {
+			break
+		}
+	}
 }
 
 func (s *Server) handleLogResponse(message string) string {
@@ -302,10 +320,14 @@ func (s *Server) handleConnection(c net.Conn) {
 			if err != nil {
 				response = err.Error()
 			}
+			if strings.HasPrefix(message, "GET") {
+				response = s.db.PerformDbOperations(message)
+			}
 			if response == "" {
 				logMessage := message + "#" + strconv.Itoa(s.currentTerm)
 				s.ackedLength[s.name] = len(s.Logs)
 				s.Logs = append(s.Logs, logMessage)
+				currLogIdx := len(s.Logs) - 1
 				err = s.db.LogCommand(logMessage, s.name)
 				if err != nil {
 					response = "error while logging command"
@@ -316,9 +338,10 @@ func (s *Server) handleConnection(c net.Conn) {
 						s.replicateLog(sname, sport)
 					}
 				}
-			}
-			if response == "" {
-				response = s.db.PerformDbOperations(message)
+				for s.commitLength < currLogIdx {
+					fmt.Println("Waiting for consensus")
+				}
+				response = "operation sucessful"
 			}
 		}
 		if response != "" {
