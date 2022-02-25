@@ -10,6 +10,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
@@ -129,7 +130,10 @@ func NewLogRequestFromString(message string) (*LogRequest, error) {
 		return nil, err
 	}
 	commitLength, _ := strconv.Atoi(splits[5])
-	suffix := strings.Split(splits[6], ",")
+	var suffix = strings.Split(splits[6], ",")
+	if len(suffix) > 0 && len(suffix[0]) == 0 {
+		suffix = make([]string, 0)
+	}
 	return NewLogRequest(leaderId, currentTerm, prefixLength, prefixTerm, commitLength, suffix), nil
 }
 
@@ -222,6 +226,27 @@ func (s *Server) appendEntries(prefixLength int, commitLength int, suffix []stri
 	}
 }
 
+func (s *Server) handleLogResponse(message string) string {
+	lr, _ := NewLogResponseFromString(message)
+	if lr.currentTerm > s.currentTerm {
+		s.currentTerm = lr.currentTerm
+		s.currentRole = "follower"
+		s.votedFor = ""
+		// TODO: Cancel election timer
+	}
+	if lr.currentTerm == s.currentTerm && s.currentRole == "leader" {
+		if lr.replicationSuccessful && lr.ackLength >= s.ackedLength[lr.nodeId] {
+			s.sentLength[lr.nodeId] = lr.ackLength
+			s.ackedLength[lr.nodeId] = lr.ackLength
+			s.commitLogEntries()
+		} else {
+			s.sentLength[lr.nodeId] = s.sentLength[lr.nodeId] - 1
+			s.replicateLog(lr.nodeId, lr.port)
+		}
+	}
+	return "replication successful"
+}
+
 func (s *Server) handleLogRequest(message string) string {
 	logRequest, _ := NewLogRequestFromString(message)
 	if logRequest.currentTerm > s.currentTerm {
@@ -272,27 +297,6 @@ func (s *Server) commitLogEntries() {
 			break
 		}
 	}
-}
-
-func (s *Server) handleLogResponse(message string) string {
-	lr, _ := NewLogResponseFromString(message)
-	if lr.currentTerm > s.currentTerm {
-		s.currentTerm = lr.currentTerm
-		s.currentRole = "follower"
-		s.votedFor = ""
-		// TODO: Cancel election timer
-	}
-	if lr.currentTerm == s.currentTerm && s.currentRole == "leader" {
-		if lr.replicationSuccessful && lr.ackLength >= s.ackedLength[lr.nodeId] {
-			s.sentLength[lr.nodeId] = lr.ackLength
-			s.ackedLength[lr.nodeId] = lr.ackLength
-			s.commitLogEntries()
-		} else {
-			s.sentLength[lr.nodeId] = s.sentLength[lr.nodeId] - 1
-			s.replicateLog(lr.nodeId, lr.port)
-		}
-	}
-	return "replication successful"
 }
 
 func (s *Server) handleConnection(c net.Conn) {
@@ -350,6 +354,19 @@ func (s *Server) handleConnection(c net.Conn) {
 	}
 }
 
+func (s *Server) syncUp() {
+	ticker := time.NewTicker(3 * time.Second)
+	for t := range ticker.C {
+		fmt.Println("sending heartbeat at: ", t)
+		allServers, _ := logging.ListRegisteredServer()
+		for sname, sport := range allServers {
+			if sname != s.name {
+				s.replicateLog(sname, sport)
+			}
+		}
+	}
+}
+
 func main() {
 	parseFlags()
 	l, err := net.Listen("tcp", ":"+*port)
@@ -386,6 +403,9 @@ func main() {
 		sentLength:    map[string]int{},
 	}
 	s.logServerPersistedState()
+	if s.currentRole == "leader" {
+		go s.syncUp()
+	}
 	for {
 		c, err := l.Accept()
 		if err != nil {
