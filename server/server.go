@@ -20,18 +20,20 @@ var (
 )
 
 type Server struct {
-	port          string
-	name          string
-	db            *db.Database
-	currentTerm   int
-	votedFor      string
-	Logs          []string
-	commitLength  int
-	currentRole   string
-	leaderNodeId  string
-	votesReceived map[string]bool
-	ackedLength   map[string]int
-	sentLength    map[string]int
+	port               string
+	name               string
+	db                 *db.Database
+	currentTerm        int
+	votedFor           string
+	Logs               []string
+	commitLength       int
+	currentRole        string
+	leaderNodeId       string
+	votesReceived      map[string]bool
+	ackedLength        map[string]int
+	sentLength         map[string]int
+	electionTimeout    *time.Ticker
+	resetElectionTimer chan struct{}
 }
 
 type LogRequest struct {
@@ -232,7 +234,7 @@ func (s *Server) handleLogResponse(message string) string {
 		s.currentTerm = lr.currentTerm
 		s.currentRole = "follower"
 		s.votedFor = ""
-		// TODO: Cancel election timer
+		go s.electionTimer()
 	}
 	if lr.currentTerm == s.currentTerm && s.currentRole == "leader" {
 		if lr.replicationSuccessful && lr.ackLength >= s.ackedLength[lr.nodeId] {
@@ -248,13 +250,16 @@ func (s *Server) handleLogResponse(message string) string {
 }
 
 func (s *Server) handleLogRequest(message string) string {
+	s.resetElectionTimer <- struct{}{}
 	logRequest, _ := NewLogRequestFromString(message)
 	if logRequest.currentTerm > s.currentTerm {
 		s.currentTerm = logRequest.currentTerm
 		s.votedFor = ""
-		// TODO: Cancel election time
 	}
 	if logRequest.currentTerm == s.currentTerm {
+		if s.currentRole == "leader" {
+			go s.electionTimer()
+		}
 		s.currentRole = "follower"
 		s.leaderNodeId = logRequest.leaderId
 	}
@@ -304,8 +309,7 @@ func (s *Server) handleConnection(c net.Conn) {
 	for {
 		data, err := bufio.NewReader(c).ReadString('\n')
 		if err != nil {
-			fmt.Println(err)
-			return
+			continue
 		}
 		message := strings.TrimSpace(string(data))
 		if message == "invalid command" || message == "replication successful" {
@@ -354,6 +358,18 @@ func (s *Server) handleConnection(c net.Conn) {
 	}
 }
 
+func (s *Server) electionTimer() {
+	for {
+		select {
+		case <-s.electionTimeout.C:
+			fmt.Println("Timed out")
+		case <-s.resetElectionTimer:
+			fmt.Println("Resetting election timer")
+			s.electionTimeout.Reset(5 * time.Second)
+		}
+	}
+}
+
 func (s *Server) syncUp() {
 	ticker := time.NewTicker(3 * time.Second)
 	for t := range ticker.C {
@@ -389,22 +405,26 @@ func main() {
 	}
 
 	s := Server{
-		port:          *port,
-		name:          *serverName,
-		db:            db,
-		currentTerm:   0,
-		votedFor:      "",
-		Logs:          make([]string, 0),
-		commitLength:  0,
-		currentRole:   *currentRole,
-		leaderNodeId:  "",
-		votesReceived: map[string]bool{},
-		ackedLength:   map[string]int{},
-		sentLength:    map[string]int{},
+		port:               *port,
+		name:               *serverName,
+		db:                 db,
+		currentTerm:        0,
+		votedFor:           "",
+		Logs:               make([]string, 0),
+		commitLength:       0,
+		currentRole:        *currentRole,
+		leaderNodeId:       "",
+		votesReceived:      map[string]bool{},
+		ackedLength:        map[string]int{},
+		sentLength:         map[string]int{},
+		electionTimeout:    time.NewTicker(5 * time.Second),
+		resetElectionTimer: make(chan struct{}),
 	}
 	s.logServerPersistedState()
 	if s.currentRole == "leader" {
 		go s.syncUp()
+	} else if s.currentRole == "follower" {
+		go s.electionTimer()
 	}
 	for {
 		c, err := l.Accept()
