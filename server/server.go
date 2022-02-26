@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"multiclient-server/db"
 	"multiclient-server/logging"
 	"net"
@@ -20,20 +21,21 @@ var (
 )
 
 type Server struct {
-	port               string
-	name               string
-	db                 *db.Database
-	currentTerm        int
-	votedFor           string
-	Logs               []string
-	commitLength       int
-	currentRole        string
-	leaderNodeId       string
-	votesReceived      map[string]bool
-	ackedLength        map[string]int
-	sentLength         map[string]int
-	electionTimeout    *time.Ticker
-	resetElectionTimer chan struct{}
+	port                    string
+	name                    string
+	db                      *db.Database
+	currentTerm             int
+	votedFor                string
+	Logs                    []string
+	commitLength            int
+	currentRole             string
+	leaderNodeId            string
+	votesReceived           map[string]bool
+	ackedLength             map[string]int
+	sentLength              map[string]int
+	electionTimeout         *time.Ticker
+	resetElectionTimer      chan struct{}
+	electionTimeoutInterval int
 }
 
 type LogRequest struct {
@@ -53,62 +55,20 @@ type LogResponse struct {
 	replicationSuccessful bool
 }
 
-func NewLogResponse(nodeId string, port int, currentTerm int, ackLength int, replicationSuccessful bool) *LogResponse {
-	return &LogResponse{
-		nodeId:                nodeId,
-		port:                  port,
-		currentTerm:           currentTerm,
-		ackLength:             ackLength,
-		replicationSuccessful: replicationSuccessful,
-	}
+type VoteRequest struct {
+	candidateId        string
+	candidateTerm      int
+	candidateLogLength int
+	candidateLogTerm   int
 }
 
-func (l LogResponse) String() string {
-	return "LogResponse" + "|" + l.nodeId + "|" + strconv.Itoa(l.port) + "|" + strconv.Itoa(l.currentTerm) + "|" + strconv.Itoa(l.ackLength) + "|" + strconv.FormatBool(l.replicationSuccessful)
+type VoteResponse struct {
+	nodeId      string
+	currentTerm int
+	voteInFavor bool
 }
 
-func NewLogResponseFromString(message string) (*LogResponse, error) {
-	splits := strings.Split(message, "|")
-	var err error
-	_, err = strconv.Atoi(splits[2])
-	if err != nil {
-		return nil, err
-	}
-	port, _ := strconv.Atoi(splits[2])
-	_, err = strconv.Atoi(splits[3])
-	if err != nil {
-		return nil, err
-	}
-	currentTerm, _ := strconv.Atoi(splits[3])
-	_, err = strconv.Atoi(splits[4])
-	if err != nil {
-		return nil, err
-	}
-	ackLength, _ := strconv.Atoi(splits[4])
-	_, err = strconv.ParseBool(splits[5])
-	if err != nil {
-		return nil, err
-	}
-	replicationSuccessful, _ := strconv.ParseBool(splits[5])
-	return NewLogResponse(splits[1], port, currentTerm, ackLength, replicationSuccessful), nil
-}
-
-func NewLogRequest(leaderId string, currentTerm int, prefixLength int, prefixTerm int, commitLength int, suffix []string) *LogRequest {
-	return &LogRequest{
-		leaderId:     leaderId,
-		currentTerm:  currentTerm,
-		prefixLength: prefixLength,
-		prefixTerm:   prefixTerm,
-		commitLength: commitLength,
-		suffix:       suffix,
-	}
-}
-
-func (l *LogRequest) String() string {
-	return "LogRequest" + "|" + l.leaderId + "|" + strconv.Itoa(l.currentTerm) + "|" + strconv.Itoa(l.prefixLength) + "|" + strconv.Itoa(l.prefixTerm) + "|" + strconv.Itoa(l.commitLength) + "|" + strings.Join(l.suffix, ",")
-}
-
-func NewLogRequestFromString(message string) (*LogRequest, error) {
+func parseLogRequest(message string) (*LogRequest, error) {
 	splits := strings.Split(message, "|")
 	leaderId := splits[1]
 	var err error
@@ -136,7 +96,108 @@ func NewLogRequestFromString(message string) (*LogRequest, error) {
 	if len(suffix) > 0 && len(suffix[0]) == 0 {
 		suffix = make([]string, 0)
 	}
-	return NewLogRequest(leaderId, currentTerm, prefixLength, prefixTerm, commitLength, suffix), nil
+	return &LogRequest{
+		leaderId:     leaderId,
+		currentTerm:  currentTerm,
+		prefixLength: prefixLength,
+		prefixTerm:   prefixTerm,
+		commitLength: commitLength,
+		suffix:       suffix,
+	}, nil
+}
+
+func parseLogResponse(message string) (*LogResponse, error) {
+	splits := strings.Split(message, "|")
+	var err error
+	_, err = strconv.Atoi(splits[2])
+	if err != nil {
+		return nil, err
+	}
+	port, _ := strconv.Atoi(splits[2])
+	_, err = strconv.Atoi(splits[3])
+	if err != nil {
+		return nil, err
+	}
+	currentTerm, _ := strconv.Atoi(splits[3])
+	_, err = strconv.Atoi(splits[4])
+	if err != nil {
+		return nil, err
+	}
+	ackLength, _ := strconv.Atoi(splits[4])
+	_, err = strconv.ParseBool(splits[5])
+	if err != nil {
+		return nil, err
+	}
+	replicationSuccessful, _ := strconv.ParseBool(splits[5])
+	return &LogResponse{
+		nodeId:                splits[1],
+		port:                  port,
+		currentTerm:           currentTerm,
+		ackLength:             ackLength,
+		replicationSuccessful: replicationSuccessful,
+	}, nil
+}
+
+func parseVoteRequest(message string) (*VoteRequest, error) {
+	splits := strings.Split(message, "|")
+	var err error
+	_, err = strconv.Atoi(splits[2])
+	if err != nil {
+		return nil, err
+	}
+	candidateTerm, _ := strconv.Atoi(splits[2])
+	_, err = strconv.Atoi(splits[3])
+	if err != nil {
+		return nil, err
+	}
+	candidateLogLength, _ := strconv.Atoi(splits[3])
+	_, err = strconv.Atoi(splits[4])
+	if err != nil {
+		return nil, err
+	}
+	candidateLogTerm, _ := strconv.Atoi(splits[4])
+	return &VoteRequest{
+		candidateId:        splits[1],
+		candidateTerm:      candidateTerm,
+		candidateLogLength: candidateLogLength,
+		candidateLogTerm:   candidateLogTerm,
+	}, nil
+}
+
+func parseVoteResponse(message string) (*VoteResponse, error) {
+	splits := strings.Split(message, "|")
+	var err error
+	_, err = strconv.Atoi(splits[2])
+	if err != nil {
+		return nil, err
+	}
+	currentTerm, _ := strconv.Atoi(splits[2])
+	_, err = strconv.ParseBool(splits[3])
+	if err != nil {
+		return nil, err
+	}
+	voteInFavor, _ := strconv.ParseBool(splits[3])
+	return &VoteResponse{
+		nodeId:      splits[1],
+		currentTerm: currentTerm,
+		voteInFavor: voteInFavor,
+	}, nil
+}
+
+func (l *LogRequest) String() string {
+	return "LogRequest" + "|" + l.leaderId + "|" + strconv.Itoa(l.currentTerm) + "|" + strconv.Itoa(l.prefixLength) + "|" + strconv.Itoa(l.prefixTerm) + "|" + strconv.Itoa(l.commitLength) + "|" + strings.Join(l.suffix, ",")
+}
+
+func (l LogResponse) String() string {
+	return "LogResponse" + "|" + l.nodeId + "|" + strconv.Itoa(l.port) + "|" + strconv.Itoa(l.currentTerm) + "|" + strconv.Itoa(l.ackLength) + "|" + strconv.FormatBool(l.replicationSuccessful)
+}
+
+func (vr *VoteRequest) String() string {
+	return "VoteRequest" + "|" + vr.candidateId + "|" + strconv.Itoa(vr.candidateTerm) + "|" + strconv.Itoa(vr.candidateLogLength) + "|" + strconv.Itoa(vr.candidateLogTerm)
+}
+
+func (vr *VoteResponse) String() string {
+	return "VoteResponse" + "|" + vr.nodeId + "|" + strconv.Itoa(vr.currentTerm) + "|" + strconv.FormatBool(vr.voteInFavor)
 }
 
 func (s *Server) logServerPersistedState() {
@@ -176,14 +237,14 @@ func (s *Server) replicateLog(followerName string, followerPort int) {
 		logSplit := strings.Split(s.Logs[prefixLength-1], "#")
 		prefixTerm, _ = strconv.Atoi(logSplit[1])
 	}
-	logRequest := NewLogRequest(
-		s.name,
-		s.currentTerm,
-		prefixLength,
-		prefixTerm,
-		s.commitLength,
-		s.Logs[s.sentLength[followerName]:],
-	)
+	logRequest := LogRequest{
+		leaderId:     s.name,
+		currentTerm:  s.currentTerm,
+		prefixLength: prefixLength,
+		prefixTerm:   prefixTerm,
+		commitLength: s.commitLength,
+		suffix:       s.Logs[s.sentLength[followerName]:],
+	}
 	s.sendMessageToFollowerNode(logRequest.String(), followerPort)
 }
 
@@ -229,7 +290,7 @@ func (s *Server) appendEntries(prefixLength int, commitLength int, suffix []stri
 }
 
 func (s *Server) handleLogResponse(message string) string {
-	lr, _ := NewLogResponseFromString(message)
+	lr, _ := parseLogResponse(message)
 	if lr.currentTerm > s.currentTerm {
 		s.currentTerm = lr.currentTerm
 		s.currentRole = "follower"
@@ -251,7 +312,7 @@ func (s *Server) handleLogResponse(message string) string {
 
 func (s *Server) handleLogRequest(message string) string {
 	s.resetElectionTimer <- struct{}{}
-	logRequest, _ := NewLogRequestFromString(message)
+	logRequest, _ := parseLogRequest(message)
 	if logRequest.currentTerm > s.currentTerm {
 		s.currentTerm = logRequest.currentTerm
 		s.votedFor = ""
@@ -273,26 +334,34 @@ func (s *Server) handleLogRequest(message string) string {
 	if s.currentTerm == logRequest.currentTerm && logOk {
 		s.appendEntries(logRequest.prefixLength, logRequest.commitLength, logRequest.suffix)
 		ack := logRequest.prefixLength + len(logRequest.suffix)
-		return NewLogResponse(
-			s.name, port, s.currentTerm, ack, true,
-		).String()
+		return LogResponse{
+			nodeId:                s.name,
+			port:                  port,
+			currentTerm:           s.currentTerm,
+			ackLength:             ack,
+			replicationSuccessful: true,
+		}.String()
 	} else {
-		return NewLogResponse(
-			s.name, port, s.currentTerm, 0, false,
-		).String()
+		return LogResponse{
+			nodeId:                s.name,
+			port:                  port,
+			currentTerm:           s.currentTerm,
+			ackLength:             0,
+			replicationSuccessful: false,
+		}.String()
 	}
 }
 
 func (s *Server) commitLogEntries() {
-	all_nodes, _ := logging.ListRegisteredServer()
+	allNodes, _ := logging.ListRegisteredServer()
 	for i := s.commitLength; i < len(s.Logs); i++ {
 		var acks = 0
-		for node := range all_nodes {
+		for node := range allNodes {
 			if node != s.name && s.ackedLength[node] > s.commitLength {
 				acks = acks + 1
 			}
 		}
-		if acks >= (len(all_nodes)+1)/2 {
+		if acks >= (len(allNodes)+1)/2 {
 			log := s.Logs[i]
 			command := strings.Split(log, "#")[0]
 			s.db.PerformDbOperations(command)
@@ -301,6 +370,72 @@ func (s *Server) commitLogEntries() {
 		} else {
 			break
 		}
+	}
+}
+
+func (s *Server) handleVoteRequest(message string) string {
+	voteRequest, _ := parseVoteRequest(message)
+	if voteRequest.candidateTerm > s.currentTerm {
+		s.currentTerm = voteRequest.candidateTerm
+		s.currentRole = "follower"
+		s.votedFor = ""
+	}
+	var lastTerm = 0
+	if len(s.Logs) > 0 {
+		lastTerm = parseLogTerm(s.Logs[len(s.Logs)-1])
+	}
+	var logOk = false
+	if voteRequest.candidateLogTerm > lastTerm ||
+		(voteRequest.candidateLogTerm == lastTerm && voteRequest.candidateLogLength >= len(s.Logs)) {
+		logOk = true
+	}
+	var vr VoteResponse
+	if voteRequest.candidateTerm == s.currentTerm && logOk && (s.votedFor == "" || s.votedFor == voteRequest.candidateId) {
+		s.votedFor = voteRequest.candidateId
+		vr = VoteResponse{
+			nodeId:      s.name,
+			currentTerm: s.currentTerm,
+			voteInFavor: true,
+		}
+	} else {
+		vr = VoteResponse{
+			nodeId:      s.name,
+			currentTerm: s.currentTerm,
+			voteInFavor: false,
+		}
+	}
+	return vr.String()
+}
+
+func (s *Server) checkForElectionResult() {
+	var totalVotes = 0
+	for server := range s.votesReceived {
+		if s.votesReceived[server] {
+			totalVotes += 1
+		}
+	}
+	allNodes, _ := logging.ListRegisteredServer()
+	if totalVotes >= (len(allNodes)+1)/2 {
+		s.currentRole = "leader"
+		s.leaderNodeId = s.name
+		s.electionTimeout.Stop()
+		s.syncUp()
+	}
+}
+
+func (s *Server) handleVoteResponse(message string) {
+	voteResponse, _ := parseVoteResponse(message)
+	if voteResponse.currentTerm > s.currentTerm {
+		if s.currentRole != "leader" {
+			s.resetElectionTimer <- struct{}{}
+		}
+		s.currentTerm = voteResponse.currentTerm
+		s.currentRole = "follower"
+		s.votedFor = ""
+	}
+	if s.currentRole == "candidate" && voteResponse.currentTerm == s.currentTerm && voteResponse.voteInFavor {
+		s.votesReceived[voteResponse.nodeId] = true
+		s.checkForElectionResult()
 	}
 }
 
@@ -322,6 +457,12 @@ func (s *Server) handleConnection(c net.Conn) {
 		}
 		if strings.HasPrefix(message, "LogResponse") {
 			response = s.handleLogResponse(message)
+		}
+		if strings.HasPrefix(message, "VoteRequest") {
+			response = s.handleVoteRequest(message)
+		}
+		if strings.HasPrefix(message, "VoteResponse") {
+			s.handleVoteResponse(message)
 		}
 		if s.currentRole == "leader" && response == "" {
 			var err = s.db.ValidateCommand(message)
@@ -358,14 +499,41 @@ func (s *Server) handleConnection(c net.Conn) {
 	}
 }
 
+func (s *Server) startElection() {
+	s.currentTerm = s.currentTerm + 1
+	s.currentRole = "candidate"
+	s.votedFor = s.name
+	s.votesReceived = map[string]bool{}
+	s.votesReceived[s.name] = true
+	var lastTerm = 0
+	if len(s.Logs) > 0 {
+		lastTerm = parseLogTerm(s.Logs[len(s.Logs)-1])
+	}
+	voteRequest := VoteRequest{
+		candidateId:        s.name,
+		candidateTerm:      s.currentTerm,
+		candidateLogLength: len(s.Logs),
+		candidateLogTerm:   lastTerm,
+	}
+	allNodes, _ := logging.ListRegisteredServer()
+	for node, port := range allNodes {
+		if node != s.name {
+			s.sendMessageToFollowerNode(voteRequest.String(), port)
+		}
+	}
+}
+
 func (s *Server) electionTimer() {
 	for {
 		select {
 		case <-s.electionTimeout.C:
 			fmt.Println("Timed out")
+			if s.currentRole != "candidate" {
+				go s.startElection()
+			}
 		case <-s.resetElectionTimer:
 			fmt.Println("Resetting election timer")
-			s.electionTimeout.Reset(5 * time.Second)
+			s.electionTimeout.Reset(time.Duration(s.electionTimeoutInterval) * time.Second)
 		}
 	}
 }
@@ -403,22 +571,26 @@ func main() {
 		fmt.Println(err)
 		return
 	}
+	rand.Seed(time.Now().UnixNano())
+	minTimeout := 4
+	maxTimeout := 10
 
 	s := Server{
-		port:               *port,
-		name:               *serverName,
-		db:                 db,
-		currentTerm:        0,
-		votedFor:           "",
-		Logs:               make([]string, 0),
-		commitLength:       0,
-		currentRole:        *currentRole,
-		leaderNodeId:       "",
-		votesReceived:      map[string]bool{},
-		ackedLength:        map[string]int{},
-		sentLength:         map[string]int{},
-		electionTimeout:    time.NewTicker(5 * time.Second),
-		resetElectionTimer: make(chan struct{}),
+		port:                    *port,
+		name:                    *serverName,
+		db:                      db,
+		currentTerm:             0,
+		votedFor:                "",
+		Logs:                    make([]string, 0),
+		commitLength:            0,
+		currentRole:             *currentRole,
+		leaderNodeId:            "",
+		votesReceived:           map[string]bool{},
+		ackedLength:             map[string]int{},
+		sentLength:              map[string]int{},
+		electionTimeout:         time.NewTicker(5 * time.Second),
+		resetElectionTimer:      make(chan struct{}),
+		electionTimeoutInterval: rand.Intn(maxTimeout-minTimeout+1) + minTimeout,
 	}
 	s.logServerPersistedState()
 	if s.currentRole == "leader" {
