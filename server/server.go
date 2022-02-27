@@ -36,6 +36,7 @@ type Server struct {
 	electionTimeout         *time.Ticker
 	resetElectionTimer      chan struct{}
 	electionTimeoutInterval int
+	suspectedNodes          map[int]bool
 }
 
 type LogRequest struct {
@@ -164,7 +165,7 @@ func parseVoteRequest(message string) (*VoteRequest, error) {
 	}, nil
 }
 
-func parseVoteResponse(message string) (*VoteResponse, error) {
+func NewVoteResponseFromString(message string) (*VoteResponse, error) {
 	splits := strings.Split(message, "|")
 	var err error
 	_, err = strconv.Atoi(splits[2])
@@ -221,8 +222,12 @@ func parseFlags() {
 }
 
 func (s *Server) sendMessageToFollowerNode(message string, port int) {
+	if s.suspectedNodes[port] {
+		return
+	}
 	c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
+		s.suspectedNodes[port] = true
 		fmt.Println(err)
 		return
 	}
@@ -231,6 +236,10 @@ func (s *Server) sendMessageToFollowerNode(message string, port int) {
 }
 
 func (s *Server) replicateLog(followerName string, followerPort int) {
+	if followerName == s.name {
+		go s.commitLogEntries()
+		return
+	}
 	var prefixTerm = 0
 	prefixLength := s.sentLength[followerName]
 	if prefixLength > 0 {
@@ -354,14 +363,15 @@ func (s *Server) handleLogRequest(message string) string {
 
 func (s *Server) commitLogEntries() {
 	allNodes, _ := logging.ListRegisteredServer()
+	eligbleNodeCount := len(allNodes) - len(s.suspectedNodes)
 	for i := s.commitLength; i < len(s.Logs); i++ {
 		var acks = 0
 		for node := range allNodes {
-			if node != s.name && s.ackedLength[node] > s.commitLength {
+			if s.ackedLength[node] > s.commitLength {
 				acks = acks + 1
 			}
 		}
-		if acks >= (len(allNodes)+1)/2 {
+		if acks >= (eligbleNodeCount+1)/2 || eligbleNodeCount == 1 {
 			log := s.Logs[i]
 			command := strings.Split(log, "#")[0]
 			s.db.PerformDbOperations(command)
@@ -424,7 +434,7 @@ func (s *Server) checkForElectionResult() {
 }
 
 func (s *Server) handleVoteResponse(message string) {
-	voteResponse, _ := parseVoteResponse(message)
+	voteResponse, _ := NewVoteResponseFromString(message)
 	if voteResponse.currentTerm > s.currentTerm {
 		if s.currentRole != "leader" {
 			s.resetElectionTimer <- struct{}{}
@@ -483,12 +493,10 @@ func (s *Server) handleConnection(c net.Conn) {
 				}
 				allServers, _ := logging.ListRegisteredServer()
 				for sname, sport := range allServers {
-					if sname != s.name {
-						s.replicateLog(sname, sport)
-					}
+					s.replicateLog(sname, sport)
 				}
-				for s.commitLength < currLogIdx {
-					fmt.Println("Waiting for consensus")
+				for s.commitLength <= currLogIdx {
+					fmt.Println("Waiting for consensus: ")
 				}
 				response = "operation sucessful"
 			}
@@ -591,6 +599,7 @@ func main() {
 		electionTimeout:         time.NewTicker(5 * time.Second),
 		resetElectionTimer:      make(chan struct{}),
 		electionTimeoutInterval: rand.Intn(maxTimeout-minTimeout+1) + minTimeout,
+		suspectedNodes:          map[int]bool{},
 	}
 	s.logServerPersistedState()
 	if s.currentRole == "leader" {
