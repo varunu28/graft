@@ -31,13 +31,10 @@ type Server struct {
 	commitLength            int
 	currentRole             string
 	leaderNodeId            string
-	votesReceived           map[string]bool
-	ackedLength             map[string]int
-	sentLength              map[string]int
+	peerdata                *model.PeerData
 	electionTimeout         *time.Ticker
 	resetElectionTimer      chan struct{}
 	electionTimeoutInterval int
-	suspectedNodes          map[int]bool
 }
 
 func (s *Server) logServerPersistedState() {
@@ -61,12 +58,12 @@ func parseFlags() {
 }
 
 func (s *Server) sendMessageToFollowerNode(message string, port int) {
-	if s.suspectedNodes[port] {
+	if s.peerdata.SuspectedNodes[port] {
 		return
 	}
 	c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
-		s.suspectedNodes[port] = true
+		s.peerdata.SuspectedNodes[port] = true
 		fmt.Println(err)
 		return
 	}
@@ -80,12 +77,12 @@ func (s *Server) replicateLog(followerName string, followerPort int) {
 		return
 	}
 	var prefixTerm = 0
-	prefixLength := s.sentLength[followerName]
+	prefixLength := s.peerdata.SentLength[followerName]
 	if prefixLength > 0 {
 		logSplit := strings.Split(s.Logs[prefixLength-1], "#")
 		prefixTerm, _ = strconv.Atoi(logSplit[1])
 	}
-	logRequest := model.NewLogRequest(s.name, s.currentTerm, prefixLength, prefixTerm, s.commitLength, s.Logs[s.sentLength[followerName]:])
+	logRequest := model.NewLogRequest(s.name, s.currentTerm, prefixLength, prefixTerm, s.commitLength, s.Logs[s.peerdata.SentLength[followerName]:])
 	s.sendMessageToFollowerNode(logRequest.String(), followerPort)
 }
 
@@ -139,12 +136,12 @@ func (s *Server) handleLogResponse(message string) string {
 		go s.electionTimer()
 	}
 	if lr.CurrentTerm == s.currentTerm && s.currentRole == "leader" {
-		if lr.ReplicationSuccessful && lr.AckLength >= s.ackedLength[lr.NodeId] {
-			s.sentLength[lr.NodeId] = lr.AckLength
-			s.ackedLength[lr.NodeId] = lr.AckLength
+		if lr.ReplicationSuccessful && lr.AckLength >= s.peerdata.AckedLength[lr.NodeId] {
+			s.peerdata.SentLength[lr.NodeId] = lr.AckLength
+			s.peerdata.AckedLength[lr.NodeId] = lr.AckLength
 			s.commitLogEntries()
 		} else {
-			s.sentLength[lr.NodeId] = s.sentLength[lr.NodeId] - 1
+			s.peerdata.SentLength[lr.NodeId] = s.peerdata.SentLength[lr.NodeId] - 1
 			s.replicateLog(lr.NodeId, lr.Port)
 		}
 	}
@@ -183,11 +180,11 @@ func (s *Server) handleLogRequest(message string) string {
 
 func (s *Server) commitLogEntries() {
 	allNodes, _ := logging.ListRegisteredServer()
-	eligbleNodeCount := len(allNodes) - len(s.suspectedNodes)
+	eligbleNodeCount := len(allNodes) - len(s.peerdata.SuspectedNodes)
 	for i := s.commitLength; i < len(s.Logs); i++ {
 		var acks = 0
 		for node := range allNodes {
-			if s.ackedLength[node] > s.commitLength {
+			if s.peerdata.AckedLength[node] > s.commitLength {
 				acks = acks + 1
 			}
 		}
@@ -233,8 +230,8 @@ func (s *Server) handleVoteRequest(message string) string {
 
 func (s *Server) checkForElectionResult() {
 	var totalVotes = 0
-	for server := range s.votesReceived {
-		if s.votesReceived[server] {
+	for server := range s.peerdata.VotesReceived {
+		if s.peerdata.VotesReceived[server] {
 			totalVotes += 1
 		}
 	}
@@ -258,7 +255,7 @@ func (s *Server) handleVoteResponse(message string) {
 		s.votedFor = ""
 	}
 	if s.currentRole == "candidate" && voteResponse.CurrentTerm == s.currentTerm && voteResponse.VoteInFavor {
-		s.votesReceived[voteResponse.NodeId] = true
+		s.peerdata.VotesReceived[voteResponse.NodeId] = true
 		s.checkForElectionResult()
 	}
 }
@@ -298,7 +295,7 @@ func (s *Server) handleConnection(c net.Conn) {
 			}
 			if response == "" {
 				logMessage := message + "#" + strconv.Itoa(s.currentTerm)
-				s.ackedLength[s.name] = len(s.Logs)
+				s.peerdata.AckedLength[s.name] = len(s.Logs)
 				s.Logs = append(s.Logs, logMessage)
 				currLogIdx := len(s.Logs) - 1
 				err = s.db.LogCommand(logMessage, s.name)
@@ -325,8 +322,8 @@ func (s *Server) startElection() {
 	s.currentTerm = s.currentTerm + 1
 	s.currentRole = "candidate"
 	s.votedFor = s.name
-	s.votesReceived = map[string]bool{}
-	s.votesReceived[s.name] = true
+	s.peerdata.VotesReceived = map[string]bool{}
+	s.peerdata.VotesReceived[s.name] = true
 	var lastTerm = 0
 	if len(s.Logs) > 0 {
 		lastTerm = parseLogTerm(s.Logs[len(s.Logs)-1])
@@ -378,6 +375,7 @@ func main() {
 	defer l.Close()
 
 	db, err := db.NewDatabase()
+	peerdata := model.NewPeerData()
 	if err != nil {
 		fmt.Println("Error while creating db")
 		return
@@ -402,13 +400,10 @@ func main() {
 		commitLength:            0,
 		currentRole:             *currentRole,
 		leaderNodeId:            "",
-		votesReceived:           map[string]bool{},
-		ackedLength:             map[string]int{},
-		sentLength:              map[string]int{},
+		peerdata:                peerdata,
 		electionTimeout:         time.NewTicker(5 * time.Second),
 		resetElectionTimer:      make(chan struct{}),
 		electionTimeoutInterval: rand.Intn(maxTimeout-minTimeout+1) + minTimeout,
-		suspectedNodes:          map[int]bool{},
 	}
 	s.logServerPersistedState()
 	if s.currentRole == "leader" {
