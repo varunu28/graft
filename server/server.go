@@ -21,6 +21,12 @@ var (
 	currentRole = flag.String("current-role", "follower", "current role for server")
 )
 
+const (
+	BroadcastPeriod    = 3000
+	ElectionMinTimeout = 3001
+	ElectionMaxTimeout = 10000
+)
+
 type Server struct {
 	port           string
 	name           string
@@ -90,7 +96,7 @@ func parseLogTerm(message string) int {
 	return pTerm
 }
 
-func (s *Server) AddLog(log string) []string {
+func (s *Server) addLogs(log string) []string {
 	s.Logs = append(s.Logs, log)
 	return s.Logs
 }
@@ -109,7 +115,7 @@ func (s *Server) appendEntries(prefixLength int, commitLength int, suffix []stri
 	}
 	if prefixLength+len(suffix) > len(s.Logs) {
 		for i := (len(s.Logs) - prefixLength); i < len(suffix); i++ {
-			s.AddLog(suffix[i])
+			s.addLogs(suffix[i])
 			err := s.db.LogCommand(suffix[i], s.name)
 			if err != nil {
 				fmt.Println(err)
@@ -198,12 +204,29 @@ func (s *Server) commitLogEntries() {
 	}
 }
 
+func (s *Server) checkForElectionResult() {
+	var totalVotes = 0
+	for server := range s.peerdata.VotesReceived {
+		if s.peerdata.VotesReceived[server] {
+			totalVotes += 1
+		}
+	}
+	allNodes, _ := logging.ListRegisteredServer()
+	if totalVotes >= (len(allNodes)+1)/2 {
+		s.currentRole = "leader"
+		s.leaderNodeId = s.name
+		s.electionModule.ElectionTimeout.Stop()
+		s.syncUp()
+	}
+}
+
 func (s *Server) handleVoteRequest(message string) string {
 	voteRequest, _ := model.ParseVoteRequest(message)
 	if voteRequest.CandidateTerm > s.currentTerm {
 		s.currentTerm = voteRequest.CandidateTerm
 		s.currentRole = "follower"
 		s.votedFor = ""
+		s.electionModule.ResetElectionTimer <- struct{}{}
 	}
 	var lastTerm = 0
 	if len(s.Logs) > 0 {
@@ -223,22 +246,6 @@ func (s *Server) handleVoteRequest(message string) string {
 		).String()
 	} else {
 		return model.NewVoteResponse(s.name, s.currentTerm, false).String()
-	}
-}
-
-func (s *Server) checkForElectionResult() {
-	var totalVotes = 0
-	for server := range s.peerdata.VotesReceived {
-		if s.peerdata.VotesReceived[server] {
-			totalVotes += 1
-		}
-	}
-	allNodes, _ := logging.ListRegisteredServer()
-	if totalVotes >= (len(allNodes)+1)/2 {
-		s.currentRole = "leader"
-		s.leaderNodeId = s.name
-		s.electionModule.ElectionTimeout.Stop()
-		s.syncUp()
 	}
 }
 
@@ -340,18 +347,21 @@ func (s *Server) electionTimer() {
 		select {
 		case <-s.electionModule.ElectionTimeout.C:
 			fmt.Println("Timed out")
-			if s.currentRole != "candidate" {
+			if s.currentRole == "follower" {
 				go s.startElection()
+			} else {
+				s.currentRole = "follower"
+				s.electionModule.ResetElectionTimer <- struct{}{}
 			}
 		case <-s.electionModule.ResetElectionTimer:
 			fmt.Println("Resetting election timer")
-			s.electionModule.ElectionTimeout.Reset(time.Duration(s.electionModule.ElectionTimeoutInterval) * time.Second)
+			s.electionModule.ElectionTimeout.Reset(time.Duration(s.electionModule.ElectionTimeoutInterval) * time.Millisecond)
 		}
 	}
 }
 
 func (s *Server) syncUp() {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(BroadcastPeriod * time.Millisecond)
 	for t := range ticker.C {
 		fmt.Println("sending heartbeat at: ", t)
 		allServers, _ := logging.ListRegisteredServer()
@@ -372,17 +382,15 @@ func main() {
 	}
 	defer l.Close()
 
-	rand.Seed(time.Now().UnixNano())
-	minTimeout := 4
-	maxTimeout := 10
-
 	db, err := db.NewDatabase()
-	peerdata := model.NewPeerData()
-	electionModule := model.NewElectionModule(time.NewTicker(5*time.Second), make(chan struct{}), rand.Intn(maxTimeout-minTimeout+1)+minTimeout)
 	if err != nil {
 		fmt.Println("Error while creating db")
 		return
 	}
+
+	rand.Seed(time.Now().UnixNano())
+	electionTimeoutInterval := rand.Intn(int(ElectionMaxTimeout)-int(ElectionMinTimeout)) + int(ElectionMinTimeout)
+	electionModule := model.NewElectionModule(electionTimeoutInterval)
 
 	err = logging.RegisterServer(*serverName, *port)
 	if err != nil {
@@ -400,7 +408,7 @@ func main() {
 		commitLength:   0,
 		currentRole:    *currentRole,
 		leaderNodeId:   "",
-		peerdata:       peerdata,
+		peerdata:       model.NewPeerData(),
 		electionModule: electionModule,
 	}
 	s.logServerPersistedState()

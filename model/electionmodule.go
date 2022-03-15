@@ -8,10 +8,10 @@ type ElectionModule struct {
 	ElectionTimeoutInterval int
 }
 
-func NewElectionModule(ticker *time.Ticker, resetChan chan struct{}, electionTimeoutInterval int) *ElectionModule {
+func NewElectionModule(electionTimeoutInterval int) *ElectionModule {
 	return &ElectionModule{
-		ElectionTimeout:         ticker,
-		ResetElectionTimer:      resetChan,
+		ElectionTimeout:         time.NewTicker(time.Duration(electionTimeoutInterval) * time.Millisecond),
+		ResetElectionTimer:      make(chan struct{}),
 		ElectionTimeoutInterval: electionTimeoutInterval,
 	}
 }
