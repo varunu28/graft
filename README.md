@@ -1,5 +1,5 @@
 # Go Raft
-From sratch implementation of Raft consensus algorithm in Go
+From scratch implementation of [Raft consensus algorithm](https://raft.github.io/raft.pdf) in Go
 
 ## Raft in action
 
