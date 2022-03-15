@@ -4,11 +4,11 @@ import (
 	"bufio"
 	"flag"
 	"fmt"
+	"graft/db"
+	"graft/logging"
+	"graft/model"
 	"log"
 	"math/rand"
-	"multiclient-server/db"
-	"multiclient-server/logging"
-	"multiclient-server/model"
 	"net"
 	"strconv"
 	"strings"
@@ -327,6 +327,7 @@ func (s *Server) startElection() {
 			s.sendMessageToFollowerNode(voteRequest.String(), port)
 		}
 	}
+	s.checkForElectionResult()
 }
 
 func (s *Server) electionTimer() {

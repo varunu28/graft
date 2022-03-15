@@ -1,7 +1,7 @@
 package logging
 
 import (
-	"multiclient-server/fileutils"
+	"graft/fileutils"
 	"strconv"
 	"strings"
 )

@@ -1,6 +1,6 @@
 package logging
 
-import "multiclient-server/fileutils"
+import "graft/fileutils"
 
 const serverStateFileName string = "server-state.txt"
 

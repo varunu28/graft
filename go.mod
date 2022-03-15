@@ -1,3 +1,3 @@
-module multiclient-server
+module graft
 
 go 1.17
