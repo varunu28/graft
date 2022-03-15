@@ -22,19 +22,17 @@ var (
 )
 
 type Server struct {
-	port                    string
-	name                    string
-	db                      *db.Database
-	currentTerm             int
-	votedFor                string
-	Logs                    []string
-	commitLength            int
-	currentRole             string
-	leaderNodeId            string
-	peerdata                *model.PeerData
-	electionTimeout         *time.Ticker
-	resetElectionTimer      chan struct{}
-	electionTimeoutInterval int
+	port           string
+	name           string
+	db             *db.Database
+	currentTerm    int
+	votedFor       string
+	Logs           []string
+	commitLength   int
+	currentRole    string
+	leaderNodeId   string
+	peerdata       *model.PeerData
+	electionModule *model.ElectionModule
 }
 
 func (s *Server) logServerPersistedState() {
@@ -149,7 +147,7 @@ func (s *Server) handleLogResponse(message string) string {
 }
 
 func (s *Server) handleLogRequest(message string) string {
-	s.resetElectionTimer <- struct{}{}
+	s.electionModule.ResetElectionTimer <- struct{}{}
 	logRequest, _ := model.ParseLogRequest(message)
 	if logRequest.CurrentTerm > s.currentTerm {
 		s.currentTerm = logRequest.CurrentTerm
@@ -239,7 +237,7 @@ func (s *Server) checkForElectionResult() {
 	if totalVotes >= (len(allNodes)+1)/2 {
 		s.currentRole = "leader"
 		s.leaderNodeId = s.name
-		s.electionTimeout.Stop()
+		s.electionModule.ElectionTimeout.Stop()
 		s.syncUp()
 	}
 }
@@ -248,7 +246,7 @@ func (s *Server) handleVoteResponse(message string) {
 	voteResponse, _ := model.ParseVoteResponse(message)
 	if voteResponse.CurrentTerm > s.currentTerm {
 		if s.currentRole != "leader" {
-			s.resetElectionTimer <- struct{}{}
+			s.electionModule.ResetElectionTimer <- struct{}{}
 		}
 		s.currentTerm = voteResponse.CurrentTerm
 		s.currentRole = "follower"
@@ -340,14 +338,14 @@ func (s *Server) startElection() {
 func (s *Server) electionTimer() {
 	for {
 		select {
-		case <-s.electionTimeout.C:
+		case <-s.electionModule.ElectionTimeout.C:
 			fmt.Println("Timed out")
 			if s.currentRole != "candidate" {
 				go s.startElection()
 			}
-		case <-s.resetElectionTimer:
+		case <-s.electionModule.ResetElectionTimer:
 			fmt.Println("Resetting election timer")
-			s.electionTimeout.Reset(time.Duration(s.electionTimeoutInterval) * time.Second)
+			s.electionModule.ElectionTimeout.Reset(time.Duration(s.electionModule.ElectionTimeoutInterval) * time.Second)
 		}
 	}
 }
@@ -374,8 +372,13 @@ func main() {
 	}
 	defer l.Close()
 
+	rand.Seed(time.Now().UnixNano())
+	minTimeout := 4
+	maxTimeout := 10
+
 	db, err := db.NewDatabase()
 	peerdata := model.NewPeerData()
+	electionModule := model.NewElectionModule(time.NewTicker(5*time.Second), make(chan struct{}), rand.Intn(maxTimeout-minTimeout+1)+minTimeout)
 	if err != nil {
 		fmt.Println("Error while creating db")
 		return
@@ -386,24 +389,19 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	rand.Seed(time.Now().UnixNano())
-	minTimeout := 4
-	maxTimeout := 10
 
 	s := Server{
-		port:                    *port,
-		name:                    *serverName,
-		db:                      db,
-		currentTerm:             0,
-		votedFor:                "",
-		Logs:                    make([]string, 0),
-		commitLength:            0,
-		currentRole:             *currentRole,
-		leaderNodeId:            "",
-		peerdata:                peerdata,
-		electionTimeout:         time.NewTicker(5 * time.Second),
-		resetElectionTimer:      make(chan struct{}),
-		electionTimeoutInterval: rand.Intn(maxTimeout-minTimeout+1) + minTimeout,
+		port:           *port,
+		name:           *serverName,
+		db:             db,
+		currentTerm:    0,
+		votedFor:       "",
+		Logs:           make([]string, 0),
+		commitLength:   0,
+		currentRole:    *currentRole,
+		leaderNodeId:   "",
+		peerdata:       peerdata,
+		electionModule: electionModule,
 	}
 	s.logServerPersistedState()
 	if s.currentRole == "leader" {
