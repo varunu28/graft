@@ -16,9 +16,8 @@ import (
 )
 
 var (
-	serverName  = flag.String("server-name", "", "name for the server")
-	port        = flag.String("port", "", "port for running the server")
-	currentRole = flag.String("current-role", "follower", "current role for server")
+	serverName = flag.String("server-name", "", "name for the server")
+	port       = flag.String("port", "", "port for running the server")
 )
 
 const (
@@ -49,18 +48,6 @@ func (s *Server) logServerPersistedState() {
 	}
 }
 
-func parseFlags() {
-	flag.Parse()
-
-	if *serverName == "" {
-		log.Fatalf("Must provide serverName for the server")
-	}
-
-	if *port == "" {
-		log.Fatalf("Must provide a port number for server to run")
-	}
-}
-
 func (s *Server) sendMessageToFollowerNode(message string, port int) {
 	if s.peerdata.SuspectedNodes[port] {
 		return
@@ -88,12 +75,6 @@ func (s *Server) replicateLog(followerName string, followerPort int) {
 	}
 	logRequest := model.NewLogRequest(s.name, s.currentTerm, prefixLength, prefixTerm, s.commitLength, s.Logs[s.peerdata.SentLength[followerName]:])
 	s.sendMessageToFollowerNode(logRequest.String(), followerPort)
-}
-
-func parseLogTerm(message string) int {
-	split := strings.Split(message, "#")
-	pTerm, _ := strconv.Atoi(split[1])
-	return pTerm
 }
 
 func (s *Server) addLogs(log string) []string {
@@ -204,22 +185,6 @@ func (s *Server) commitLogEntries() {
 	}
 }
 
-func (s *Server) checkForElectionResult() {
-	var totalVotes = 0
-	for server := range s.peerdata.VotesReceived {
-		if s.peerdata.VotesReceived[server] {
-			totalVotes += 1
-		}
-	}
-	allNodes, _ := logging.ListRegisteredServer()
-	if totalVotes >= (len(allNodes)+1)/2 {
-		s.currentRole = "leader"
-		s.leaderNodeId = s.name
-		s.electionModule.ElectionTimeout.Stop()
-		s.syncUp()
-	}
-}
-
 func (s *Server) handleVoteRequest(message string) string {
 	voteRequest, _ := model.ParseVoteRequest(message)
 	if voteRequest.CandidateTerm > s.currentTerm {
@@ -239,6 +204,7 @@ func (s *Server) handleVoteRequest(message string) string {
 	}
 	if voteRequest.CandidateTerm == s.currentTerm && logOk && (s.votedFor == "" || s.votedFor == voteRequest.CandidateId) {
 		s.votedFor = voteRequest.CandidateId
+		s.logServerPersistedState()
 		return model.NewVoteResponse(
 			s.name,
 			s.currentTerm,
@@ -320,6 +286,27 @@ func (s *Server) handleConnection(c net.Conn) {
 		if response != "" {
 			c.Write([]byte(response + "\n"))
 		}
+	}
+}
+
+func (s *Server) checkForElectionResult() {
+	if s.currentRole == "leader" {
+		return
+	}
+	var totalVotes = 0
+	for server := range s.peerdata.VotesReceived {
+		if s.peerdata.VotesReceived[server] {
+			totalVotes += 1
+		}
+	}
+	allNodes, _ := logging.ListRegisteredServer()
+	if totalVotes >= (len(allNodes)+1)/2 {
+		fmt.Println("I won the election. New leader: ", s.name, " Votes received: ", totalVotes)
+		s.currentRole = "leader"
+		s.leaderNodeId = s.name
+		s.peerdata.VotesReceived = make(map[string]bool)
+		s.electionModule.ElectionTimeout.Stop()
+		s.syncUp()
 	}
 }
 
@@ -406,7 +393,7 @@ func main() {
 		votedFor:       "",
 		Logs:           make([]string, 0),
 		commitLength:   0,
-		currentRole:    *currentRole,
+		currentRole:    "follower",
 		leaderNodeId:   "",
 		peerdata:       model.NewPeerData(),
 		electionModule: electionModule,
@@ -424,5 +411,23 @@ func main() {
 			return
 		}
 		go s.handleConnection(c)
+	}
+}
+
+func parseLogTerm(message string) int {
+	split := strings.Split(message, "#")
+	pTerm, _ := strconv.Atoi(split[1])
+	return pTerm
+}
+
+func parseFlags() {
+	flag.Parse()
+
+	if *serverName == "" {
+		log.Fatalf("Must provide serverName for the server")
+	}
+
+	if *port == "" {
+		log.Fatalf("Must provide a port number for server to run")
 	}
 }
