@@ -49,14 +49,14 @@ func (s *Server) logServerPersistedState() {
 }
 
 func (s *Server) sendMessageToFollowerNode(message string, port int) {
-	if s.peerdata.SuspectedNodes[port] {
-		return
-	}
 	c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
 		s.peerdata.SuspectedNodes[port] = true
-		fmt.Println(err)
 		return
+	}
+	_, ok := s.peerdata.SuspectedNodes[port]
+	if ok {
+		delete(s.peerdata.SuspectedNodes, port)
 	}
 	fmt.Fprintf(c, message+"\n")
 	go s.handleConnection(c)
@@ -400,11 +400,7 @@ func main() {
 		electionModule: electionModule,
 	}
 	s.logServerPersistedState()
-	if s.currentRole == "leader" {
-		go s.syncUp()
-	} else if s.currentRole == "follower" {
-		go s.electionTimer()
-	}
+	go s.electionTimer()
 	for {
 		c, err := l.Accept()
 		if err != nil {
