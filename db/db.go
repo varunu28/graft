@@ -110,3 +110,15 @@ func (d *Database) LogCommand(command string, serverName string) error {
 	}
 	return nil
 }
+
+func (d *Database) RebuildLogIfExists(serverName string) []string {
+	logs := make([]string, 0)
+	fileName := serverName + ".txt"
+	fileutils.CreateFileIfNotExists(fileName)
+	lines, _ := fileutils.ReadFile(fileName)
+	for _, line := range lines {
+		splits := strings.Split(line, ",")
+		logs = append(logs, splits[1])
+	}
+	return logs
+}

@@ -383,13 +383,11 @@ func main() {
 		return
 	}
 
-	serverState := model.NewServerState(*serverName)
-
 	s := Server{
 		port:           *port,
 		db:             db,
-		Logs:           make([]string, 0),
-		serverState:    serverState,
+		Logs:           db.RebuildLogIfExists(*serverName),
+		serverState:    model.GetExistingServerStateOrCreateNew(*serverName),
 		currentRole:    "follower",
 		leaderNodeId:   "",
 		peerdata:       model.NewPeerData(),
