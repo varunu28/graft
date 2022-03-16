@@ -28,12 +28,9 @@ const (
 
 type Server struct {
 	port           string
-	name           string
 	db             *db.Database
-	currentTerm    int
-	votedFor       string
+	serverState    *model.ServerState
 	Logs           []string
-	commitLength   int
 	currentRole    string
 	leaderNodeId   string
 	peerdata       *model.PeerData
@@ -41,7 +38,7 @@ type Server struct {
 }
 
 func (s *Server) logServerPersistedState() {
-	persistenceLog := s.name + "," + strconv.Itoa(s.currentTerm) + "," + s.votedFor + "," + strconv.Itoa(s.commitLength)
+	persistenceLog := s.serverState.Name + "," + strconv.Itoa(s.serverState.CurrentTerm) + "," + s.serverState.VotedFor + "," + strconv.Itoa(s.serverState.CommitLength)
 	err := logging.PersistServerState(persistenceLog)
 	if err != nil {
 		fmt.Println(err)
@@ -63,7 +60,7 @@ func (s *Server) sendMessageToFollowerNode(message string, port int) {
 }
 
 func (s *Server) replicateLog(followerName string, followerPort int) {
-	if followerName == s.name {
+	if followerName == s.serverState.Name {
 		go s.commitLogEntries()
 		return
 	}
@@ -73,7 +70,7 @@ func (s *Server) replicateLog(followerName string, followerPort int) {
 		logSplit := strings.Split(s.Logs[prefixLength-1], "#")
 		prefixTerm, _ = strconv.Atoi(logSplit[1])
 	}
-	logRequest := model.NewLogRequest(s.name, s.currentTerm, prefixLength, prefixTerm, s.commitLength, s.Logs[s.peerdata.SentLength[followerName]:])
+	logRequest := model.NewLogRequest(s.serverState.Name, s.serverState.CurrentTerm, prefixLength, prefixTerm, s.serverState.CommitLength, s.Logs[s.peerdata.SentLength[followerName]:])
 	s.sendMessageToFollowerNode(logRequest.String(), followerPort)
 }
 
@@ -97,30 +94,30 @@ func (s *Server) appendEntries(prefixLength int, commitLength int, suffix []stri
 	if prefixLength+len(suffix) > len(s.Logs) {
 		for i := (len(s.Logs) - prefixLength); i < len(suffix); i++ {
 			s.addLogs(suffix[i])
-			err := s.db.LogCommand(suffix[i], s.name)
+			err := s.db.LogCommand(suffix[i], s.serverState.Name)
 			if err != nil {
 				fmt.Println(err)
 			}
 		}
 	}
-	if commitLength > s.commitLength {
-		for i := s.commitLength; i < commitLength; i++ {
+	if commitLength > s.serverState.CommitLength {
+		for i := s.serverState.CommitLength; i < commitLength; i++ {
 			s.db.PerformDbOperations(strings.Split(s.Logs[i], "#")[0])
 		}
-		s.commitLength = commitLength
+		s.serverState.CommitLength = commitLength
 		s.logServerPersistedState()
 	}
 }
 
 func (s *Server) handleLogResponse(message string) string {
 	lr, _ := model.ParseLogResponse(message)
-	if lr.CurrentTerm > s.currentTerm {
-		s.currentTerm = lr.CurrentTerm
+	if lr.CurrentTerm > s.serverState.CurrentTerm {
+		s.serverState.CurrentTerm = lr.CurrentTerm
 		s.currentRole = "follower"
-		s.votedFor = ""
+		s.serverState.VotedFor = ""
 		go s.electionTimer()
 	}
-	if lr.CurrentTerm == s.currentTerm && s.currentRole == "leader" {
+	if lr.CurrentTerm == s.serverState.CurrentTerm && s.currentRole == "leader" {
 		if lr.ReplicationSuccessful && lr.AckLength >= s.peerdata.AckedLength[lr.NodeId] {
 			s.peerdata.SentLength[lr.NodeId] = lr.AckLength
 			s.peerdata.AckedLength[lr.NodeId] = lr.AckLength
@@ -136,11 +133,11 @@ func (s *Server) handleLogResponse(message string) string {
 func (s *Server) handleLogRequest(message string) string {
 	s.electionModule.ResetElectionTimer <- struct{}{}
 	logRequest, _ := model.ParseLogRequest(message)
-	if logRequest.CurrentTerm > s.currentTerm {
-		s.currentTerm = logRequest.CurrentTerm
-		s.votedFor = ""
+	if logRequest.CurrentTerm > s.serverState.CurrentTerm {
+		s.serverState.CurrentTerm = logRequest.CurrentTerm
+		s.serverState.VotedFor = ""
 	}
-	if logRequest.CurrentTerm == s.currentTerm {
+	if logRequest.CurrentTerm == s.serverState.CurrentTerm {
 		if s.currentRole == "leader" {
 			go s.electionTimer()
 		}
@@ -154,22 +151,22 @@ func (s *Server) handleLogRequest(message string) string {
 		logOk = true
 	}
 	port, _ := strconv.Atoi(s.port)
-	if s.currentTerm == logRequest.CurrentTerm && logOk {
+	if s.serverState.CurrentTerm == logRequest.CurrentTerm && logOk {
 		s.appendEntries(logRequest.PrefixLength, logRequest.CommitLength, logRequest.Suffix)
 		ack := logRequest.PrefixLength + len(logRequest.Suffix)
-		return model.NewLogResponse(s.name, port, s.currentTerm, ack, true).String()
+		return model.NewLogResponse(s.serverState.Name, port, s.serverState.CurrentTerm, ack, true).String()
 	} else {
-		return model.NewLogResponse(s.name, port, s.currentTerm, 0, false).String()
+		return model.NewLogResponse(s.serverState.Name, port, s.serverState.CurrentTerm, 0, false).String()
 	}
 }
 
 func (s *Server) commitLogEntries() {
 	allNodes, _ := logging.ListRegisteredServer()
 	eligbleNodeCount := len(allNodes) - len(s.peerdata.SuspectedNodes)
-	for i := s.commitLength; i < len(s.Logs); i++ {
+	for i := s.serverState.CommitLength; i < len(s.Logs); i++ {
 		var acks = 0
 		for node := range allNodes {
-			if s.peerdata.AckedLength[node] > s.commitLength {
+			if s.peerdata.AckedLength[node] > s.serverState.CommitLength {
 				acks = acks + 1
 			}
 		}
@@ -177,7 +174,7 @@ func (s *Server) commitLogEntries() {
 			log := s.Logs[i]
 			command := strings.Split(log, "#")[0]
 			s.db.PerformDbOperations(command)
-			s.commitLength = s.commitLength + 1
+			s.serverState.CommitLength = s.serverState.CommitLength + 1
 			s.logServerPersistedState()
 		} else {
 			break
@@ -187,10 +184,10 @@ func (s *Server) commitLogEntries() {
 
 func (s *Server) handleVoteRequest(message string) string {
 	voteRequest, _ := model.ParseVoteRequest(message)
-	if voteRequest.CandidateTerm > s.currentTerm {
-		s.currentTerm = voteRequest.CandidateTerm
+	if voteRequest.CandidateTerm > s.serverState.CurrentTerm {
+		s.serverState.CurrentTerm = voteRequest.CandidateTerm
 		s.currentRole = "follower"
-		s.votedFor = ""
+		s.serverState.VotedFor = ""
 		s.electionModule.ResetElectionTimer <- struct{}{}
 	}
 	var lastTerm = 0
@@ -202,30 +199,30 @@ func (s *Server) handleVoteRequest(message string) string {
 		(voteRequest.CandidateLogTerm == lastTerm && voteRequest.CandidateLogLength >= len(s.Logs)) {
 		logOk = true
 	}
-	if voteRequest.CandidateTerm == s.currentTerm && logOk && (s.votedFor == "" || s.votedFor == voteRequest.CandidateId) {
-		s.votedFor = voteRequest.CandidateId
+	if voteRequest.CandidateTerm == s.serverState.CurrentTerm && logOk && (s.serverState.VotedFor == "" || s.serverState.VotedFor == voteRequest.CandidateId) {
+		s.serverState.VotedFor = voteRequest.CandidateId
 		s.logServerPersistedState()
 		return model.NewVoteResponse(
-			s.name,
-			s.currentTerm,
+			s.serverState.Name,
+			s.serverState.CurrentTerm,
 			true,
 		).String()
 	} else {
-		return model.NewVoteResponse(s.name, s.currentTerm, false).String()
+		return model.NewVoteResponse(s.serverState.Name, s.serverState.CurrentTerm, false).String()
 	}
 }
 
 func (s *Server) handleVoteResponse(message string) {
 	voteResponse, _ := model.ParseVoteResponse(message)
-	if voteResponse.CurrentTerm > s.currentTerm {
+	if voteResponse.CurrentTerm > s.serverState.CurrentTerm {
 		if s.currentRole != "leader" {
 			s.electionModule.ResetElectionTimer <- struct{}{}
 		}
-		s.currentTerm = voteResponse.CurrentTerm
+		s.serverState.CurrentTerm = voteResponse.CurrentTerm
 		s.currentRole = "follower"
-		s.votedFor = ""
+		s.serverState.VotedFor = ""
 	}
-	if s.currentRole == "candidate" && voteResponse.CurrentTerm == s.currentTerm && voteResponse.VoteInFavor {
+	if s.currentRole == "candidate" && voteResponse.CurrentTerm == s.serverState.CurrentTerm && voteResponse.VoteInFavor {
 		s.peerdata.VotesReceived[voteResponse.NodeId] = true
 		s.checkForElectionResult()
 	}
@@ -265,11 +262,11 @@ func (s *Server) handleConnection(c net.Conn) {
 				response = s.db.PerformDbOperations(message)
 			}
 			if response == "" {
-				logMessage := message + "#" + strconv.Itoa(s.currentTerm)
-				s.peerdata.AckedLength[s.name] = len(s.Logs)
+				logMessage := message + "#" + strconv.Itoa(s.serverState.CurrentTerm)
+				s.peerdata.AckedLength[s.serverState.Name] = len(s.Logs)
 				s.Logs = append(s.Logs, logMessage)
 				currLogIdx := len(s.Logs) - 1
-				err = s.db.LogCommand(logMessage, s.name)
+				err = s.db.LogCommand(logMessage, s.serverState.Name)
 				if err != nil {
 					response = "error while logging command"
 				}
@@ -277,7 +274,7 @@ func (s *Server) handleConnection(c net.Conn) {
 				for sname, sport := range allServers {
 					s.replicateLog(sname, sport)
 				}
-				for s.commitLength <= currLogIdx {
+				for s.serverState.CommitLength <= currLogIdx {
 					fmt.Println("Waiting for consensus: ")
 				}
 				response = "operation sucessful"
@@ -301,9 +298,9 @@ func (s *Server) checkForElectionResult() {
 	}
 	allNodes, _ := logging.ListRegisteredServer()
 	if totalVotes >= (len(allNodes)+1)/2 {
-		fmt.Println("I won the election. New leader: ", s.name, " Votes received: ", totalVotes)
+		fmt.Println("I won the election. New leader: ", s.serverState.Name, " Votes received: ", totalVotes)
 		s.currentRole = "leader"
-		s.leaderNodeId = s.name
+		s.leaderNodeId = s.serverState.Name
 		s.peerdata.VotesReceived = make(map[string]bool)
 		s.electionModule.ElectionTimeout.Stop()
 		s.syncUp()
@@ -311,19 +308,19 @@ func (s *Server) checkForElectionResult() {
 }
 
 func (s *Server) startElection() {
-	s.currentTerm = s.currentTerm + 1
+	s.serverState.CurrentTerm = s.serverState.CurrentTerm + 1
 	s.currentRole = "candidate"
-	s.votedFor = s.name
+	s.serverState.VotedFor = s.serverState.Name
 	s.peerdata.VotesReceived = map[string]bool{}
-	s.peerdata.VotesReceived[s.name] = true
+	s.peerdata.VotesReceived[s.serverState.Name] = true
 	var lastTerm = 0
 	if len(s.Logs) > 0 {
 		lastTerm = parseLogTerm(s.Logs[len(s.Logs)-1])
 	}
-	voteRequest := model.NewVoteRequest(s.name, s.currentTerm, len(s.Logs), lastTerm)
+	voteRequest := model.NewVoteRequest(s.serverState.Name, s.serverState.CurrentTerm, len(s.Logs), lastTerm)
 	allNodes, _ := logging.ListRegisteredServer()
 	for node, port := range allNodes {
-		if node != s.name {
+		if node != s.serverState.Name {
 			s.sendMessageToFollowerNode(voteRequest.String(), port)
 		}
 	}
@@ -354,7 +351,7 @@ func (s *Server) syncUp() {
 		fmt.Println("sending heartbeat at: ", t)
 		allServers, _ := logging.ListRegisteredServer()
 		for sname, sport := range allServers {
-			if sname != s.name {
+			if sname != s.serverState.Name {
 				s.replicateLog(sname, sport)
 			}
 		}
@@ -386,14 +383,13 @@ func main() {
 		return
 	}
 
+	serverState := model.NewServerState(*serverName)
+
 	s := Server{
 		port:           *port,
-		name:           *serverName,
 		db:             db,
-		currentTerm:    0,
-		votedFor:       "",
 		Logs:           make([]string, 0),
-		commitLength:   0,
+		serverState:    serverState,
 		currentRole:    "follower",
 		leaderNodeId:   "",
 		peerdata:       model.NewPeerData(),
