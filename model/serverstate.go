@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"graft/logging"
 	"strconv"
 	"strings"
@@ -11,6 +12,14 @@ type ServerState struct {
 	CurrentTerm  int
 	VotedFor     string
 	CommitLength int
+}
+
+func (serverState *ServerState) LogServerPersistedState() {
+	persistenceLog := serverState.Name + "," + strconv.Itoa(serverState.CurrentTerm) + "," + serverState.VotedFor + "," + strconv.Itoa(serverState.CommitLength)
+	err := logging.PersistServerState(persistenceLog)
+	if err != nil {
+		fmt.Println(err)
+	}
 }
 
 func GetExistingServerStateOrCreateNew(name string) *ServerState {

@@ -37,14 +37,6 @@ type Server struct {
 	electionModule *model.ElectionModule
 }
 
-func (s *Server) logServerPersistedState() {
-	persistenceLog := s.serverState.Name + "," + strconv.Itoa(s.serverState.CurrentTerm) + "," + s.serverState.VotedFor + "," + strconv.Itoa(s.serverState.CommitLength)
-	err := logging.PersistServerState(persistenceLog)
-	if err != nil {
-		fmt.Println(err)
-	}
-}
-
 func (s *Server) sendMessageToFollowerNode(message string, port int) {
 	c, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(port))
 	if err != nil {
@@ -105,7 +97,7 @@ func (s *Server) appendEntries(prefixLength int, commitLength int, suffix []stri
 			s.db.PerformDbOperations(strings.Split(s.Logs[i], "#")[0])
 		}
 		s.serverState.CommitLength = commitLength
-		s.logServerPersistedState()
+		s.serverState.LogServerPersistedState()
 	}
 }
 
@@ -175,7 +167,7 @@ func (s *Server) commitLogEntries() {
 			command := strings.Split(log, "#")[0]
 			s.db.PerformDbOperations(command)
 			s.serverState.CommitLength = s.serverState.CommitLength + 1
-			s.logServerPersistedState()
+			s.serverState.LogServerPersistedState()
 		} else {
 			break
 		}
@@ -201,7 +193,7 @@ func (s *Server) handleVoteRequest(message string) string {
 	}
 	if voteRequest.CandidateTerm == s.serverState.CurrentTerm && logOk && (s.serverState.VotedFor == "" || s.serverState.VotedFor == voteRequest.CandidateId) {
 		s.serverState.VotedFor = voteRequest.CandidateId
-		s.logServerPersistedState()
+		s.serverState.LogServerPersistedState()
 		return model.NewVoteResponse(
 			s.serverState.Name,
 			s.serverState.CurrentTerm,
@@ -393,7 +385,7 @@ func main() {
 		peerdata:       model.NewPeerData(),
 		electionModule: electionModule,
 	}
-	s.logServerPersistedState()
+	s.serverState.LogServerPersistedState()
 	go s.electionTimer()
 	for {
 		c, err := l.Accept()
