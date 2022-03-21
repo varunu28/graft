@@ -1,5 +1,6 @@
 # GRaft
-From scratch implementation of [Raft consensus algorithm](https://raft.github.io/raft.pdf) in Go
+From scratch implementation of [Raft consensus algorithm](https://raft.github.io/raft.pdf) in Go. 
+[Blog post describing an overview of Raft](https://distributed-computing-musings.com/2022/03/implementing-raft-consensus-algorithm-in-go/)
 
 ## Raft in action
 
